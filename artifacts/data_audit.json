@@ -1,0 +1,37 @@
+{
+  "train": {
+    "file": "input\\train.csv",
+    "rows": 173099,
+    "wafers": 160,
+    "old_failures": 19062,
+    "final_failures": 25581,
+    "eligible_dies": 154037,
+    "new_failures": 6519,
+    "eligible_new_fail_rate": 0.04232100079850945,
+    "wafers_with_zero_new_failures": 6,
+    "wafer_new_fail_rate_median": 0.027418735329682052,
+    "wafer_new_fail_rate_q90": 0.08402421393369583,
+    "wafer_new_fail_rate_max": 0.5
+  },
+  "test": {
+    "file": "input\\test.csv",
+    "rows": 39351,
+    "wafers": 40,
+    "old_failures": 6753,
+    "final_failures": 8133,
+    "eligible_dies": 32598,
+    "new_failures": 1380,
+    "eligible_new_fail_rate": 0.04233388551444874,
+    "wafers_with_zero_new_failures": 1,
+    "wafer_new_fail_rate_median": 0.03043137813211845,
+    "wafer_new_fail_rate_q90": 0.08861503623188406,
+    "wafer_new_fail_rate_max": 0.15379213483146068
+  },
+  "validation": {
+    "file": "input\\validation.csv",
+    "rows": 39351,
+    "wafers": 40,
+    "old_failures": 6753,
+    "eligible_dies": 32598
+  }
+}

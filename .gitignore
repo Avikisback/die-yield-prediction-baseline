@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.idea/
+.vscode/
+
+data/
+input/
+cache/
+*.pkl
+*.parquet
+
+# Local experiment outputs; the committed aggregate baseline results and
+# selected model artifacts are already tracked explicitly.
+results/modeling/
+results/modeling_full/oof_predictions.parquet
+results/holdout/holdout_predictions.parquet
