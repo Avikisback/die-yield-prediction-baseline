@@ -1,0 +1,44 @@
+Loading 1056 columns from cache_mrf\train
+  154037 eligible dies, 6519 failures (4.232%), 160 wafers
+
+block_only: sub-die readings alone
+  AP=0.1372  ROC-AUC=0.7259  fail F1=0.1962  P=0.148 R=0.289  (12.1s)
+
+parametric_only: die measurements alone
+  AP=0.5128  ROC-AUC=0.8422  fail F1=0.5268  P=0.941 R=0.366  (175.1s)
+
+A_flat: Model A, one logistic over all 513 inputs (baseline recipe)
+  AP=0.5116  ROC-AUC=0.8419  fail F1=0.5258  P=0.912 R=0.369  (184.3s)
+
+A_stacked: Model A, diagonal parametric score + logistic head
+  AP=0.5238  ROC-AUC=0.8526  fail F1=0.5282  P=0.888 R=0.376  (46.8s)
+
+A_stacked_cal: Model A, plus the recovered per-wafer rate
+  AP=0.5524  ROC-AUC=0.8844  fail F1=0.5323  P=0.853 R=0.387  (46.8s)
+
+B_flat: Model B, one logistic over all inputs (baseline recipe)
+  AP=0.5732  ROC-AUC=0.8829  fail F1=0.5525  P=0.802 R=0.421  (135.1s)
+
+B_stacked: Model B, diagonal parametric score + logistic head
+  AP=0.5863  ROC-AUC=0.8904  fail F1=0.5596  P=0.792 R=0.433  (45.5s)
+
+B_stacked_cal: Model B, plus the recovered per-wafer rate
+  AP=0.6209  ROC-AUC=0.9132  fail F1=0.5777  P=0.791 R=0.455  (46.7s)
+
+B_detrended: ablation: per-wafer gradient removal (rejected)
+  AP=0.5657  ROC-AUC=0.8770  fail F1=0.5503  P=0.870 R=0.403  (50.5s)
+
+B_boost: ablation: gradient boosting on the same inputs
+  AP=0.5430  ROC-AUC=0.8674  fail F1=0.5333  P=0.807 R=0.398  (1404.7s)
+
+     experiment  features  average_precision  roc_auc  fail_f1  fail_precision  fail_recall  accuracy  seconds
+  B_stacked_cal       541           0.620933 0.913223 0.577661        0.790933     0.454978  0.971844     46.7
+      B_stacked       541           0.586306 0.890374 0.559579        0.792135     0.432582  0.971182     45.5
+         B_flat       541           0.573238 0.882901 0.552550        0.802278     0.421384  0.971117    135.1
+    B_detrended       551           0.565677 0.876958 0.550336        0.869738     0.402516  0.972163     50.5
+  A_stacked_cal       514           0.552360 0.884448 0.532348        0.853180     0.386869  0.971234     46.8
+        B_boost       541           0.542980 0.867431 0.533320        0.806522     0.398374  0.970494   1404.7
+      A_stacked       514           0.523846 0.852639 0.528188        0.888325     0.375825  0.971585     46.8
+parametric_only       500           0.512788 0.842168 0.526839        0.940828     0.365854  0.972189    175.1
+         A_flat       514           0.511590 0.841884 0.525764        0.911776     0.369382  0.971799    184.3
+     block_only        27           0.137191 0.725921 0.196246        0.148442     0.289462  0.899654     12.1

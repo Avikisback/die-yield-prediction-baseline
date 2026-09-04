@@ -8,6 +8,7 @@ venv/
 data/
 input/
 cache/
+cache_mrf/
 *.pkl
 *.parquet
 
@@ -16,3 +17,12 @@ cache/
 results/modeling/
 results/modeling_full/oof_predictions.parquet
 results/holdout/holdout_predictions.parquet
+
+# Feature caches and scratch space for the tuned pipeline.  Per-row predictions
+# are already covered by the *.parquet rule above; only the aggregate summaries,
+# the figures, the fitted models and the submission are tracked.
+cache_tuned/
+scratch/
+
+# Local copy of the problem statement handed out with the task.
+Hackathon Problem - Die Yield Prediction/

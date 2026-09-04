@@ -1,0 +1,11 @@
+{
+  "dies": 40000,
+  "failures": 3941,
+  "derived_auc": 0.7559109317014274,
+  "derived_ap": 0.29288811659985325,
+  "derived_seconds": 115.6,
+  "cnn_auc": 0.7422831807852419,
+  "cnn_ap": 0.2759893704578514,
+  "cnn_seconds": 602.9,
+  "combined_auc": 0.7496572038724856
+}

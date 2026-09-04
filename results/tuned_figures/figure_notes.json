@@ -1,0 +1,8 @@
+{
+  "channel_shapes.png": "fitted per-channel log-likelihood ratios",
+  "wafer_rate_recovery.png": "recovered vs drawn per-wafer base rate",
+  "precision_recall.png": "out-of-fold PR curves and inspection budget",
+  "ceiling.png": "the oracle ladder",
+  "block_channel.png": "ROC of the sub-die channel on its own",
+  "hazard_shape.png": "calibration of the two radius conventions"
+}
