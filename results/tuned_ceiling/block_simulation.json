@@ -1,0 +1,9 @@
+{
+  "dies": 10000,
+  "failures": 2000,
+  "matched_filter_at_the_true_seed": 0.8605997500000001,
+  "matched_filter_maximised_over_seeds": 0.706082125,
+  "derived_likelihood_ratio_bank": 0.7419898125000001,
+  "occupancy_effective_sd": 103.26270318948657,
+  "previous_scan_bank": 0.7179031874999999
+}

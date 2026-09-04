@@ -4,5 +4,7 @@ scipy>=1.9.0
 PyYAML>=6.0
 pyarrow>=10.0.0
 scikit-learn>=1.1.0
+# imported directly by tuned/ and mrf/, not only via scikit-learn
+joblib>=1.2.0
 matplotlib>=3.5.0
 
