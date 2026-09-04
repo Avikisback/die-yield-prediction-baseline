@@ -1,313 +1,340 @@
 # Multi-Resolution Die Yield Prediction
 
-Predicting which dies pass the pre-test but fail the post-test, from three
-resolutions of the same wafer: 500 parametric measurements per die, the
-neighbourhood the die sits in, and 2,000 sub-die block readings.
+An interpretable, leakage-aware system for predicting which dies that **passed pre-test** will fail after test. The project fuses three resolutions of information:
 
-Two models, as the problem statement specifies:
+| Resolution | Signal | Used by |
+|---|---|---|
+| Die | 500 parametric measurements per die | Model A and Model B |
+| Wafer | Pre-test defect neighbourhood, radial position, edge geometry, and a wafer-specific failure-rate posterior | Model A and Model B |
+| Sub-die | 2,000 block-test readings per die | Model B only |
 
-- **Model A** — die-level measurements plus spatial context.
-- **Model B** — everything in Model A plus the block readings.
+The canonical final implementation is in [`tuned/`](tuned/). The earlier [`modeling/`](modeling/) baseline and [`mrf/`](mrf/) reference pipeline are retained so the final model can be compared fairly against reproducible predecessors.
 
-Three pipelines live here, all scored by the *same* code
-(`modeling/validation.py`) on the *same* wafer-grouped folds and the same
-seed-42 dataset:
+## Executive summary
 
-| | what it is |
-|---|---|
-| `modeling/` | the first reproducible baseline |
-| `mrf/` | diagonal discriminant, stacked head, per-wafer rate recovery |
-| `tuned/` | this pipeline: the posterior the generator implies, every piece estimated |
+The hackathon asks for two probability models:
 
-`mrf/` is **re-run from scratch here**, not quoted: `results/mrf_rerun/`
-reproduces its published table to four decimals — `B_stacked_cal` AP 0.6209,
-`block_only` ROC-AUC 0.7259, 154,037 eligible dies, 6,519 failures. So the
-comparison below is like-for-like and not an artefact of a different
-environment or a differently generated dataset.
+- **Model A:** die-level measurements plus pre-test spatial context.
+- **Model B:** Model A plus high-dimensional block-level readings.
 
-## Headline
+On 160 training wafers, evaluated with 5 wafer-grouped folds repeated 3 times, the final pipeline achieves:
 
-Cross-validation on the 160 training wafers, five wafer-grouped folds repeated
-three times:
+| Final model | Average precision | ROC-AUC | Failure-class F1 |
+|---|---:|---:|---:|
+| Model A | 0.5874 | 0.8978 | 0.5571 |
+| Model B | **0.6564** | **0.9261** | **0.6071** |
 
-| | baseline | mrf | this | vs mrf |
-|---|--:|--:|--:|--:|
-| **Model A** — AP | 0.5137 | 0.5524 | **0.5874** | +6.3% |
-| **Model A** — fail F1 | 0.5268 | 0.5323 | **0.5571** | +4.7% |
-| **Model B** — AP | 0.5758 | 0.6209 | **0.6564** | +5.7% |
-| **Model B** — fail F1 | 0.5537 | 0.5777 | **0.6071** | +5.1% |
-| **Model B** — ROC-AUC | — | 0.9132 | **0.9261** | +1.4% |
+On the untouched 40-wafer test split, Model B reaches **0.6597 AP**, **0.9327 ROC-AUC**, and **0.6041 failure F1**. Adding block readings raises held-out AP by **0.0699** over Model A.
 
-On the 40 held-out test wafers, scored once, Model B reaches **AP 0.6597**,
-**fail F1 0.6041**, ROC-AUC 0.9327 — against mrf's 0.6302 / 0.5836 and the
-baseline's 0.5934 / 0.5600.
+The benchmark is intentionally difficult: only 4.23% of eligible dies fail, 65% of generated failures receive only a small parametric shift, and the block signal is a sparse cluster hidden in 2,000 correlated readings. A trivial “all pass” classifier would be about 95.8% accurate, which is why average precision, positive-class F1, precision, and recall are central here.
 
-Exact numbers, every ablation and every paired test:
-**[RESULTS_TUNED.md](RESULTS_TUNED.md)**. Figures: `results/tuned_figures/`.
+## Rubric traceability
 
-## The model
+This section maps the requested deliverables directly to code and saved evidence.
 
-The generator makes the three resolutions conditionally independent given the
-label, so the posterior is not something to approximate with a classifier — it
-can be written down:
+| Rubric area | What this repository provides | Evidence |
+|---|---|---|
+| Prediction performance — 30% | Side-by-side Model A / Model B AP, ROC-AUC, failure F1, precision, recall, and held-out evaluation | [Results table](RESULTS_TUNED.md), [final holdout summary](results/tuned_final/holdout_summary.csv) |
+| Imbalance handling — 20% | Wafer-grouped stratified folds, AP as the lead metric, failure-class F1, out-of-fold threshold selection, and an inspection-budget curve | [validation code](modeling/validation.py), [PR / budget figure](results/tuned_figures/precision_recall.png) |
+| Interpretability — 30% | Decomposed spatial prior, parametric evidence score, block evidence score, fitted response curves, rate-recovery diagnostic, and retained per-die visual diagnostics | [fusion model](tuned/pipeline.py), [diagnostic gallery](#interpretability-and-actionable-diagnostics) |
+| Multi-resolution fusion and Model A → B analysis — 20% | A controlled Model A / Model B ablation, a likelihood-ratio block detector, and a per-wafer posterior rate model | [experiment catalogue](tuned/experiments.py), [block-channel figure](results/tuned_figures/block_channel.png) |
 
-```
-logit P(fail_i) = logit(pi_i) + f_param(s_i) + f_block(b_i)
-pi_i            = min(rate_w * h_i, 0.4)
-```
+## Problem framing and target
 
-- `h_i` is the pre-test hazard shape, `1 + 3*density + 1.5*radius`, exactly what
-  `generate_die_features` multiplies the wafer's rate by;
-- `rate_w` is the wafer's own base rate, recovered from its **unlabelled** dies;
-- `s_i` is the diagonal discriminant over the 500 measurements — a *sufficient*
-  statistic for them, not a summary of them;
-- `b_i` is a likelihood-ratio scan over the 2,000 block readings;
-- `f_param` and `f_block` are smooth functions fitted from the training labels.
+Each wafer is a grid of dies. A die can already have failed before the prediction point; these are represented by `old_label = 1`. The prediction target is a **new post-test failure among dies with `old_label = 0`**.
 
-Every term is estimated. Nothing reads `config.yaml` except `tuned/ceiling.py`,
-whose only job is to say how much better a model that *did* know the
-generator's parameters could have done.
+| Field | Meaning | Role |
+|---|---|---|
+| `wafer_id, die_row, die_col` | Wafer and grid location | Grouped validation, spatial reconstruction, submission key |
+| `old_label` | Known pre-test failure | Builds spatial context; excluded from scored population |
+| `label` | Post-test state in labelled splits | Training/evaluation target |
+| `feature_1 … feature_500` | Parametric die measurements | Die-level evidence |
+| `block_readings` | 2,000 readings encoded per die | Block-level evidence for Model B |
 
-## What moved
+Pre-test failures are never scored as newly failed dies. In the final pipeline they may be used as additional **known positive examples** when estimating the parametric direction and the block encoder; that is valid because `old_label` is available before inference and those dies carry the same generated failure signature. No post-test label is used to construct spatial features.
 
-### 1. The hazard shape was being reconstructed on the wrong grid
+## Data and synthetic benchmark
 
-`generate_die_features` normalises each die's radius by the largest distance
-anywhere in the wafer-map **array** — a corner, where there is no die at all.
-`mrf/spatial.py` normalises by the largest distance among the **observed dies**,
-about 0.75 of that, so its radius is inflated by a third and the generator's
-coefficient of 1.5 becomes an effective 2.0.
+Wafer geometry and pre-test maps come from [WM-811K](https://www.kaggle.com/datasets/qingyi/wm811k-wafer-map). The project then generates a reproducible synthetic multi-resolution benchmark around those maps; this makes the requested target, class imbalance, spatial effects, and block anomalies fully controlled.
 
-Rebuilding the radial map on the array grid makes the reconstruction exact.
-`tests/test_tuned.py` checks it against `generate_data.compute_radial_map`
-element by element, and the ceiling run reports a correlation of **1.0000**
-between the reconstructed log hazard and the generator's own per-die
-probability divided by its wafer rate.
+The default configuration is [`config.yaml`](config.yaml):
 
-There is a second, quieter confirmation. The model is *allowed* to reshape the
-hazard with a spline, and turning that freedom off changes average precision by
-−0.0003. Given a grid that is already exact, there is nothing left to correct.
+- 160 training wafers and 40 held-out test wafers;
+- 500 parametric features per die;
+- a 5 × 5 pre-test neighbourhood for the generator’s local-failure density;
+- a wafer-specific base failure rate drawn from an exponential distribution;
+- 2,000 block readings per die, with a sparse, clustered anomaly for failures;
+- 65% marginal failures, whose parametric shift is only 5–25% of the full shift.
 
-### 2. The block channel had a likelihood ratio available and was using a filter
+For an eligible die `i` on wafer `w`, the generator’s spatial prior is:
 
-`generate_block_readings` adds ~100 positive spikes to a failing die, clustered
-around one uniformly random seed, **after** the 5-tap smoothing. Writing out the
-log-likelihood ratio for a cluster seeded at `t`:
-
-```
-log LR(t) = sum_p log[ 1 + q(p - t) * (r(u_p) - 1) ]
-r(u)      = N(u; mu, sigma^2 + tau^2) / N(u; 0, sigma^2)
+```text
+h_i = 1 + 3 × local_old_fail_density_i + 1.5 × radial_distance_i
+π_i(r_w) = clip(r_w × h_i, 0, 0.4)
 ```
 
-Three things follow, and all three were measured: `r` is **nonlinear** (a
-matched filter is its linear approximation); the seed should be **integrated
-out**, not maximised over; and the noise should be **whitened first**, because
-`r` is a per-sample transform and the readings are smoothed.
+The streaming generator [`tuned/genstream.py`](tuned/genstream.py) emits the same train/test/validation CSV values as [`generate_data.py`](generate_data.py), while writing one wafer at a time to limit memory use. It also writes generator latents to `input/ground_truth.parquet` strictly for [`tuned/ceiling.py`](tuned/ceiling.py); the predictive model never reads that file.
 
-The block channel on its own, same folds, same metric code:
+> **Important:** this is a synthetic benchmark anchored to real wafer-map geometry, not a production fab qualification study. The generator-matched claims and oracle analysis should not be generalized to a real process without external validation.
 
-| | AP | ROC-AUC |
-|---|--:|--:|
-| mrf scan bank | 0.1372 | 0.7259 |
-| this | **0.1596** | **0.7461** |
+## Final architecture
 
-### 3. The wafer rate is a posterior, not a point estimate that needs shrinking
-
-`mrf/calibrate.py` recovers each wafer's rate by maximising a two-component
-mixture on the scores, then multiplies the offset by a hand-picked `alpha = 0.5`
-because the unshrunk correction costs fail-class F1.
-
-Two things change. The **hazard shape is used** — dies on a wafer do not share a
-failure probability, and mixing them with a single weight throws that away. And
-the rate is **integrated out** under the exponential prior the generator draws
-it from, whose scale is fitted on the training wafers, so the shrinkage is
-decided by each wafer's own sample size instead of one constant for all of them.
-
-| | correlation with the truth |
-|---|--:|
-| recovered rate vs the drawn `wafer_base_rate` | **0.947** |
-| implied fail fraction vs the actual, this pipeline | **0.988** |
-| implied fail fraction vs the actual, mrf | 0.967 |
-
-The fitted prior scale comes out at 0.0199 against the generator's 0.02.
-
-### 4. One constant in the fit is not identified, and calibration is what decides it
-
-The head sees `logit(prior) + intercept + prior terms + evidence terms`, and
-only the total is identified: a constant can move between the prior side and the
-evidence side without changing a single fitted probability. The rate step is
-*not* indifferent, because it reads the evidence as a likelihood ratio.
-
-This is the one place where the best-ranking option is not the one shipped, and
-the results table carries a `predicted/actual` column so the trade is visible:
-
-| where the constant goes | AP | predicted/actual failures |
-|---|--:|--:|
-| left on the prior side | 0.6578 | 0.583 |
-| **so the posterior predicts the observed failure count** | 0.6564 | **0.997** |
-| so `E[exp(evidence)] = 1` over passes | 0.6504 | 1.879 |
-
-Leaving the intercept out of the evidence quietly shrinks the wafer-rate term —
-the same trade `mrf.calibrate` makes deliberately with `alpha`. It ranks 0.0012
-better and its probabilities sum to 58% of the failures actually present. A fab
-deciding how many dies to re-inspect needs the second row, so that is what
-ships. The textbook identity is worst of the three, because `exp(evidence)`
-reaches `e^16` on the clearest failures and its sample mean is then decided by a
-handful of them.
-
-### 5. Two smaller things the generator hands over
-
-**Pre-test failures are extra labelled positives.** Dies with `old_label == 1`
-carry the same `fail_shift` under the same marginal rule, and the same block
-anomaly. They are excluded from scoring, as required, but not from fitting the
-two channel directions — worth +0.0011 AP, better on 15 folds out of 15.
-
-**The neighbourhood leaks into every measurement.** `base += fail_density * 0.2
-* fail_shift` is applied to every die, failing or not, so the diagonal score
-carries a neighbourhood offset that is not evidence about that die. The prior
-already counts the neighbourhood; leaving the offset in counts it twice, and an
-additive head cannot remove it because the true form is `f(s - c*density)`, not
-`f(s) - g(density)`. Fitting `c` on passing dies and subtracting is worth
-+0.0015 AP.
-
-## What was measured and did not help
-
-Reported because knowing which plausible ideas are dead is part of the result.
-
-**Smooth per-channel ratios tie a single coefficient.** The failing class is a
-mixture — 65% of failures get 5–25% of the shift — so the parametric
-log-likelihood ratio is genuinely kinked, and a spline should beat a slope. It
-does not: 0.6022 against 0.6023. `results/tuned_figures/channel_shapes.png`
-shows why. The kink is real but it sits out in the tail where almost no dies
-are; across the mass of the distribution the ratio is very close to straight.
-The splines are kept because they are the correct form and cost nothing, not
-because they earn their place.
-
-**Refitting the head against the recovered rates does nothing.** One, two and
-three passes span 0.0002 AP, and which is best *flips* depending on the setting
-in §4 — a knob with no signal. The single pass ships because it is the simplest
-and fastest of three indistinguishable options.
-
-**A neural network does not beat the derived block detector.** A 1-D CNN over
-the raw 2,000 readings — circular convolutions, a receptive field reaching the
-cluster's scale, learnable soft-max pooling over shifts, trained on a GPU over
-40,000 simulated dies with wafer-grouped folds — is the tool that would find
-structure a derivation missed. On those same dies and folds it reaches ROC-AUC
-**0.7423** against the derived statistic's **0.7559**, and the two scores
-together (0.7497) are worse than the derived score alone, so the network is not
-even carrying anything *different*. The closed form is not merely defensible;
-there is nothing left to find. See `tuned/blockcnn.py`.
-
-**Per-wafer gradient removal** was rejected in `mrf/` with evidence and is not
-revisited; the analysis there holds.
-
-## How close is this to optimal?
-
-`tuned/ceiling.py` scores the same dies with things the generator knows and no
-model can — each wafer's actual drawn rate, and the exact discriminant direction
-implied by `config.yaml`.
-
-| | AP | what it is allowed to know |
-|---|--:|---|
-| true prior only | 0.1285 | the generator's own per-die probability, no measurements |
-| oracle direction, population rate | 0.6040 | the generator's `fail_shift`, but no per-wafer rate |
-| **this model** | **0.6584** | nothing but the training data |
-| Bayes oracle | 0.6609 | true wafer rate *and* the generator's direction |
-| true rate, fitted channels | 0.6632 | a perfect wafer rate |
-
-The model is at **99.6% of the Bayes oracle**. Two more measurements say where
-the remaining 0.4% is *not*:
-
-- the fitted parametric direction scores ROC-AUC 0.8547 against the generator's
-  own direction at 0.8541 — the die measurements are exhausted;
-- scored only against failures that received the full shift, the same model
-  reaches **AP 0.9990**.
-
-So the entire residual error is the 65% of failures the generator deliberately
-makes near-invisible, plus the block cluster's unknowable seed
-(`tuned/blocksim.py`: on identical dies, ROC-AUC **0.861** for a detector told
-where each cluster was seeded, against **0.742** for the same detector having to
-search all 2,000 positions). Neither is a modelling failure. There is no further
-accuracy in this dataset to find.
-
-## Interpretability
-
-The model is additive in log-odds by construction, so an attribution is not an
-approximation of it — it is it:
-
-```
-logit(p) = logit(prior from the wafer rate and the neighbourhood)
-         + f_param(the die's 500 measurements, collapsed)
-         + f_block(the die's 2,000 sub-die readings, collapsed)
+```mermaid
+flowchart LR
+    A[WM-811K pre-test wafer map] --> B[Streaming synthetic data generator]
+    B --> C[Per-wafer cache]
+    C --> D[Spatial hazard reconstruction]
+    C --> E[500-feature diagonal score]
+    C --> F[2,000-reading likelihood-ratio bank]
+    F --> G[Block evidence encoder]
+    D --> H[Additive fusion head]
+    E --> H
+    G --> H
+    H --> I[Per-wafer rate posterior]
+    I --> J[Failure probabilities]
+    J --> K[OOF-selected threshold and submission]
 ```
 
-`tests/test_tuned.py` asserts the pieces sum back to the head's output exactly.
-Because the parametric channel is a single sufficient statistic with one weight
-per measurement, the per-measurement contribution is exact too, and the fitted
-separations correlate with the generator's actual `fail_shift/base_std` at
-**0.9985** — the model learned the real mechanism.
+### 1. Compact, reproducible feature cache
 
-## Class imbalance
+[`tuned/cache.py`](tuned/cache.py) reads the large CSV one wafer at a time. It:
 
-About 4.2% of eligible dies fail, so accuracy is not a usable metric —
-"all pass" scores 95.8%.
+- reconstructs spatial features only from coordinates and `old_label`;
+- keeps the 500 parametric features as `float32`;
+- converts each 2,000-value block string into compact block statistics;
+- drops the original high-memory strings; and
+- writes one Parquet file per wafer.
 
-- Folds are grouped by `wafer_id` and stratified; no wafer is split.
-- **No class weighting.** The model produces calibrated probabilities, which the
-  wafer-rate step needs and §4 is about protecting; re-weighting the fit would
-  break that. The operating point is set by an explicit threshold instead.
-- The threshold is chosen on out-of-fold predictions only.
-- Reported as AP and fail-class F1 with precision and recall shown separately,
-  plus an inspection-budget curve: what share of failures a fab catches if it can
-  re-examine 1%, 5% or 10% of dies.
-- Pre-test failures are excluded from fitting and scoring, and re-attached as
-  certain failures only when the submission is assembled.
+The block null model — signal level, robust scale, spectrum, and scan normalization — is estimated from the training readings and reused unchanged for test and validation. This keeps block features on the same scale without inspecting test labels.
 
-## Layout
+### 2. Spatial prior: what the wafer knew before test
 
-```
-tuned/
-  hazard.py       the pre-test hazard shape, on the grid the generator used
-  blocks.py       likelihood-ratio scan over the 2,000 block readings
-  channels.py     the diagonal discriminant, and why it is sufficient
-  head.py         additive log-odds head with a fixed offset
-  waferrate.py    the per-wafer rate posterior
-  pipeline.py     the model: prior, two evidence channels, the rate step
-  cache.py        CSV -> one compact Parquet file per wafer
-  genstream.py    byte-identical data generation that fits in memory, plus latents
-  select.py       the three free constants, chosen on training folds only
-  experiments.py  wafer-grouped cross-validation over the catalogue
-  final.py        held-out scoring and the submission
-  ceiling.py      what any model could have reached, and where the rest goes
-  blocksim.py     the block channel's own ceiling, by re-running its generator
-  blockcnn.py     the same question asked of a neural network (GPU)
-  figures.py      every figure
-  report.py       regenerates RESULTS_TUNED.md from the saved result files
+[`tuned/hazard.py`](tuned/hazard.py) reconstructs the exact grid convention used by the generator. It calculates radial distance on the full wafer-map array, local pre-test failure densities at 3/5/7/11 windows, nearest pre-test failure, edge distance, and wafer-level pre-test failure rate.
+
+The final model starts from the generator-shaped hazard `h_i` and allows a small learned correction to remain robust to reconstruction error. Spatial context is therefore modeled as a **prior**, rather than being confused with evidence from the die’s own measurements.
+
+![Spatial-hazard calibration: generator-grid reconstruction versus normalization by observed dies](results/tuned_figures/hazard_shape.png)
+
+### 3. Parametric die channel: 500 measurements reduced without losing the generated signal
+
+[`tuned/channels.py`](tuned/channels.py) estimates a diagonal discriminant:
+
+```text
+s_i = Σ_f [(μ_fail,f − μ_pass,f) / var_pass,f] × (x_i,f − centre_f)
 ```
 
-## Reproduce
+Under this benchmark’s conditional-independence and shared-shift assumptions, this is a sufficient one-dimensional score for the 500 die measurements. The final head does not assume that the score-to-risk relationship is linear: it learns a regularized cubic-spline response, which accommodates the marginal-failure mixture.
 
-Python 3.10+, `LSWMD.pkl` in `data/`
-([Kaggle](https://www.kaggle.com/datasets/qingyi/wm811k-wafer-map)).
-Exact commands: **[tuned/RUNBOOK.md](tuned/RUNBOOK.md)**.
+The phrase “sufficient” applies to the synthetic generator’s assumptions, not automatically to real manufacturing data. In a real deployment, correlation structure, process drift, and causal validation would need to be re-evaluated.
 
-```bash
+### 4. Block channel: clustered anomaly detection rather than raw-vector brute force
+
+[`tuned/blocks.py`](tuned/blocks.py) turns the 2,000 block readings into 73 features:
+
+- 64 nonlinear likelihood-ratio scan statistics across whitening levels, anomaly amplitudes, cluster widths, and seed-integration temperatures;
+- 9 robust global distribution statistics.
+
+The detector estimates the noise spectrum from readings, whitens the signal, applies a nonlinear density-ratio transform, scans circularly with FFTs, and integrates rather than simply maximizes over unknown cluster location. A ridge logistic model collapses this bank into one `block_score` for the fusion head.
+
+![Sub-die block channel: derived likelihood-ratio detector versus the previous scan bank](results/tuned_figures/block_channel.png)
+
+### 5. Additive fusion and per-wafer rate posterior
+
+[`tuned/pipeline.py`](tuned/pipeline.py), [`tuned/head.py`](tuned/head.py), and [`tuned/waferrate.py`](tuned/waferrate.py) implement the final model.
+
+Before integrating over the unknown wafer rate, the evidence is additive in log-odds:
+
+```text
+logit(p_i) = logit(π_i) + e_parametric(s_i) + e_block(block_score_i)
+```
+
+The prior offset enters the penalized logistic fit with coefficient one. Each evidence channel is represented by a regularized cubic B-spline, so a genuinely near-linear channel remains near-linear while nonlinearity is available when data support it.
+
+The final probability integrates over a posterior for each wafer’s unknown base failure rate:
+
+```text
+P(fail_i | wafer) = E_r [ π_i(r) × LR_i / (1 + π_i(r) × (LR_i − 1)) ]
+where LR_i = exp(e_parametric + e_block)
+```
+
+This posterior uses no labels on the scored wafer. Its exponential prior scale is estimated on training wafers only. That makes wafer-level calibration available on an unlabeled prediction split without shrinking every wafer by one hand-picked constant.
+
+![Fitted channel responses: spline evidence curves and score distributions](results/tuned_figures/channel_shapes.png)
+
+## Validation protocol and imbalance safeguards
+
+The evaluation design is intentional:
+
+1. Only `old_label = 0` dies are included in metrics.
+2. All rows from a wafer stay together. The splitter is `StratifiedGroupKFold` over `wafer_id`, so no wafer appears in both train and validation partitions.
+3. The headline cross-validation result is 5 folds × 3 repeats = 15 wafer-grouped evaluations.
+4. The three final hyperparameters are selected on a separate single 5-fold training-only sweep of 12 candidates: spline penalty, number of spline bases, and block-encoder ridge strength.
+5. The decision threshold maximizes failure-class F1 on out-of-fold predictions. The 40 held-out wafers are scored once after selection.
+6. Average precision is the principal ranking metric; ROC-AUC, failure precision, failure recall, failure F1, accuracy, and confusion-matrix counts are retained for operating-point context.
+
+The selected final settings are `lam_smooth = 20`, `n_bases = 6`, and `block_C = 0.02`. The validation and metric implementation is shared with the earlier pipelines in [`modeling/validation.py`](modeling/validation.py).
+
+![Out-of-fold precision-recall curves and inspection-budget recall](results/tuned_figures/precision_recall.png)
+
+For example, the right-hand panel answers a fab-relevant question that accuracy cannot: if only a fixed percentage of eligible dies can be re-inspected, what fraction of the newly failing dies can be found?
+
+## Results
+
+### Fair cross-validation comparison
+
+All rows below use the seed-42 generated dataset, 160 training wafers, 154,037 eligible dies, 6,519 newly failing dies, and the same wafer-grouped fold/metric code. The `mrf` reference results were regenerated in this repository rather than copied from a prior run.
+
+| Pipeline | Model | AP | ROC-AUC | Failure F1 |
+|---|---|---:|---:|---:|
+| First baseline | Model A | 0.5137 | 0.8438 | 0.5268 |
+| MRF reference | Model A | 0.5524 | 0.8844 | 0.5323 |
+| **Final tuned** | **Model A** | **0.5874** | **0.8978** | **0.5571** |
+| First baseline | Model B | 0.5758 | 0.8848 | 0.5537 |
+| MRF reference | Model B | 0.6209 | 0.9132 | 0.5777 |
+| **Final tuned** | **Model B** | **0.6564** | **0.9261** | **0.6071** |
+
+The final Model B improves AP by 0.0690 over final Model A, by 0.0355 over the re-run MRF Model B, and by 0.0806 over the first baseline Model B. Full ablations, thresholds, timings, calibration ratios, and fold metrics are in [`RESULTS_TUNED.md`](RESULTS_TUNED.md) and [`results/tuned/`](results/tuned/).
+
+### Untouched 40-wafer holdout
+
+| Model | AP | ROC-AUC | Failure precision | Failure recall | Failure F1 | Accuracy |
+|---|---:|---:|---:|---:|---:|---:|
+| Model A | 0.5898 | 0.8996 | 0.7980 | 0.4094 | 0.5412 | 0.9706 |
+| **Model B** | **0.6597** | **0.9327** | 0.7546 | **0.5036** | **0.6041** | **0.9721** |
+
+The held-out threshold comes only from training out-of-fold predictions. See [`results/tuned_final/holdout_summary.csv`](results/tuned_final/holdout_summary.csv) for the exact confusion counts and [`results/tuned_final/thresholds.json`](results/tuned_final/thresholds.json) for saved thresholds, options, and recovered rate diagnostics.
+
+### Why the final result is credible
+
+The project includes negative results and a ceiling study instead of treating every plausible change as an improvement:
+
+| Diagnostic | Result | Interpretation |
+|---|---:|---|
+| Parametric only | 0.5263 AP | The 500 die features contain the dominant individual-die signal. |
+| Block only | 0.1596 AP / 0.7454 ROC-AUC | Blocks are weak alone but provide complementary evidence. |
+| Model B without rate recovery | 0.6022 AP | Wafer-rate posterior integration contributes materially. |
+| Final Model B | 0.6564 AP | Selected calibrated cross-validated model. |
+| Bayes-oracle diagnostic | 0.6609 AP | In-sample generator-latent ceiling; not a deployment metric. |
+
+The ceiling analysis uses generator-only latent values exclusively to quantify remaining headroom. On the diagnostic run, the fitted model reaches 0.6584 AP versus 0.6609 AP for the Bayes-oracle configuration. See [`tuned/ceiling.py`](tuned/ceiling.py) and [`results/tuned_ceiling/ceiling.json`](results/tuned_ceiling/ceiling.json).
+
+![Oracle ladder: model performance relative to generator-aware diagnostic configurations](results/tuned_figures/ceiling.png)
+
+## Interpretability and actionable diagnostics
+
+The system is designed to explain a prediction at three levels.
+
+| Layer | Per-die explanation | Practical question answered |
+|---|---|---|
+| Parametric | Signed contributions into the diagonal `parametric_score` and the fitted channel-response curve | Which die measurements pulled this die toward failure? |
+| Spatial | Reconstructed local old-failure density, radius, edge/nearest-failure features, corrected hazard, and recovered wafer rate | Is the risk driven by pre-test neighbourhood or wafer context? |
+| Block | Highest-scoring likelihood-ratio scan configuration and the encoded `block_score` | Is there a localized sub-die anomaly consistent with a defect cluster? |
+
+`Fusion.score_frame` exposes the parametric score, block score, total evidence, and corrected spatial hazard. The channel-level evidence split is exact by construction. At the 500-feature level, the diagonal projection gives an exact contribution to the **parametric score**; because the final score is passed through a nonlinear spline, that per-feature value should be read as a score driver rather than falsely presented as an additive final-probability contribution.
+
+The repository also retains source-level helpers for visual inspection:
+
+- [`mrf/interpret.py`](mrf/interpret.py) materializes signed per-input contributions, ranks top drivers, and maps any per-die column back onto the wafer grid.
+- [`mrf/figures.py`](mrf/figures.py) renders wafer state/risk/contribution maps and raw block-reading traces with detected windows.
+- [`tuned/figures.py`](tuned/figures.py) renders the final model’s channel curves, PR/budget curve, hazard calibration, rate recovery, and ceiling.
+
+The next gallery is retained as an implementation-level diagnostic from the reproducible `mrf` reference track. It demonstrates the data-to-explanation surfaces — wafer layers, block windows, and ranked drivers — while the final `tuned` figures above are the authoritative final-model performance figures.
+
+<details>
+<summary>Open the spatial and block diagnostic gallery</summary>
+
+<br>
+
+<img src="results/figures/wafer_maps.png" alt="Wafer maps showing pre-test and post-test state, risk, die, spatial, and block contributions" width="100%">
+
+<br><br>
+
+<img src="results/figures/block_pattern.png" alt="Raw block readings and detected anomaly windows for caught, missed, and healthy dies" width="100%">
+
+</details>
+
+## Reproduce the final pipeline
+
+### Prerequisites
+
+- Python 3.10 or later
+- The [WM-811K `LSWMD.pkl` file](https://www.kaggle.com/datasets/qingyi/wm811k-wafer-map), placed at `data/LSWMD.pkl`
+
+Install dependencies:
+
+```powershell
 python -m pip install -r requirements.txt
+```
+
+### End-to-end commands
+
+Run these from the repository root:
+
+```powershell
+# 1. Generate byte-equivalent synthetic CSVs without holding all wafers in memory
 python -m tuned.genstream
+
+# 2. Cache features; reuse the training block null model across later splits
 python -m tuned.cache input/train.csv cache_tuned/train
 python -m tuned.cache input/test.csv cache_tuned/test --null cache_tuned/train/block_null.json
 python -m tuned.cache input/validation.csv cache_tuned/validation --null cache_tuned/train/block_null.json
-python -m unittest discover -s tests
+
+# 3. Verify implementation invariants
+python -m unittest discover -s tests -v
+
+# 4. Select the three final constants using training-only grouped CV
 python -m tuned.select cache_tuned/train results/tuned_selection
+
+# 5. Repeated grouped cross-validation and ablations
 python -m tuned.experiments cache_tuned/train results/tuned --repeats 3
+
+# 6. Fit on all training wafers, score held-out test and unlabeled validation rows
 python -m tuned.final cache_tuned/train cache_tuned/test cache_tuned/validation results/tuned_final
+
+# 7. Build the diagnostic ceiling, figures, and report
+python -m tuned.ceiling cache_tuned/train results/tuned_ceiling
+python -m tuned.figures cache_tuned/train results results/tuned_figures --mrf-oof results/mrf_rerun/oof_predictions.parquet
+python -m tuned.report results --output RESULTS_TUNED.md
 ```
 
-`python -m tuned.genstream` writes the same three CSVs as `generate_data.py` —
-same seed, same draws, byte for byte, asserted by a test — but streams wafers to
-disk instead of concatenating them in memory, which keeps the peak under a
-gigabyte instead of several.
+`validation.csv` is the test split with `label` removed. It is intended for inference-format validation, **not** as a second independent holdout and never as a tuning source.
 
-`validation.csv` is the test rows with the label dropped, so it is not an
-independent holdout and nothing was tuned against it. The 40 test wafers are
-touched exactly once, by `tuned/final.py`.
+At the checked main revision, the repository test suite contains 47 unit tests covering spatial leakage, group isolation, cache chunk boundaries, block scans, rate posterior behavior, serialization, attribution identities, generator equivalence, and submission validation.
+
+## Outputs
+
+| Path | Contents |
+|---|---|
+| `results/tuned/experiment_summary.csv` | Repeated cross-validation metrics for Model A, Model B, and ablations |
+| `results/tuned/oof_predictions.parquet` | Out-of-fold probabilities for thresholding and PR diagnostics |
+| `results/tuned_final/model_a.joblib` / `model_b.joblib` | Fitted final model bundles and thresholds |
+| `results/tuned_final/holdout_summary.csv` | One-time held-out test metrics |
+| `results/tuned_final/submission.csv` | `wafer_id, die_row, die_col, predicted_label` for every prediction die |
+| `results/tuned_final/thresholds.json` | OOF threshold, tuned options, and per-wafer posterior mean rates |
+| `results/tuned_figures/` | Final-model figures used throughout this README |
+
+The submission writer validates uniqueness and schema before output. Dies already failed at pre-test are assigned `predicted_label = 1` directly, because they are known failures rather than predictions.
+
+## Repository map
+
+```text
+generate_data.py          Reference synthetic-data generator
+config.yaml               Data-generation configuration
+modeling/                 Original baseline, common validation, and cache utilities
+mrf/                      Interpretable reference pipeline and visual diagnostics
+tuned/                    Canonical final generator-matched fusion pipeline
+tests/                    47 unit tests across the three pipelines
+results/                  Reproducible metrics, models, submissions, and figures
+RESULTS_TUNED.md          Generated detailed final experiment report
+```
+
+## Reading order
+
+For a short evaluation of the final work:
+
+1. Start with this README’s result and validation sections.
+2. Read [`RESULTS_TUNED.md`](RESULTS_TUNED.md) for every ablation and metric.
+3. Read [`tuned/pipeline.py`](tuned/pipeline.py) for the end-to-end posterior.
+4. Use [`tuned/RUNBOOK.md`](tuned/RUNBOOK.md) to reproduce the final run.
+
+For implementation history and an independently interpretable reference, inspect [`RESULTS.md`](RESULTS.md), [`mrf/`](mrf/), and [`modeling/`](modeling/).
