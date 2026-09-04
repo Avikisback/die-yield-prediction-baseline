@@ -1,0 +1,25 @@
+{
+  "chosen": {
+    "lam_smooth": 20.0,
+    "n_bases": 6.0,
+    "block_C": 0.02
+  },
+  "average_precision": 0.6566140109272349,
+  "grid": {
+    "lam_smooth": [
+      20.0,
+      2000.0,
+      50000.0
+    ],
+    "n_bases": [
+      6,
+      10
+    ],
+    "block_C": [
+      0.02,
+      0.1
+    ]
+  },
+  "n_splits": 5,
+  "repeats": 1
+}

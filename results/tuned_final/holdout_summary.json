@@ -1,0 +1,42 @@
+[
+  {
+    "threshold": 0.30989067348762295,
+    "average_precision": 0.5898018073903332,
+    "accuracy": 0.9706116939689552,
+    "pass_precision": 0.9744433991846974,
+    "pass_recall": 0.9954193093727978,
+    "pass_f1": 0.9848196742092921,
+    "fail_precision": 0.7980225988700564,
+    "fail_recall": 0.40942028985507245,
+    "fail_f1": 0.5411877394636015,
+    "tn": 31075,
+    "fp": 143,
+    "fn": 815,
+    "tp": 565,
+    "roc_auc": 0.8995683463925032,
+    "model": "model_a",
+    "stage": "held_out",
+    "threshold_source": "training out-of-fold",
+    "seconds": 127.3
+  },
+  {
+    "threshold": 0.3084819272734334,
+    "average_precision": 0.6597277596743534,
+    "accuracy": 0.9720535002147371,
+    "pass_precision": 0.978375477475771,
+    "pass_recall": 0.992760586840925,
+    "pass_f1": 0.9855155417759758,
+    "fail_precision": 0.754614549402823,
+    "fail_recall": 0.5036231884057971,
+    "fail_f1": 0.6040851803563668,
+    "tn": 30992,
+    "fp": 226,
+    "fn": 685,
+    "tp": 695,
+    "roc_auc": 0.932711061344208,
+    "model": "model_b",
+    "stage": "held_out",
+    "threshold_source": "training out-of-fold",
+    "seconds": 149.1
+  }
+]
